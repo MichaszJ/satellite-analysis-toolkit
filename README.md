@@ -2,4 +2,12 @@
 
 A toolkit of various tools and scripts for analyzing the functioning and behaviour of artificial satellites.
 
-A personal project building on top of [Orbit Tool](https://github.com/MichaszJ/orbit-tool).
+A personal project building on top of [Orbit Tool](https://github.com/MichaszJ/orbit-tool) into a more fully-fledged toolkit.
+
+Disclaimer: This is a personal projects for personal use and education, I cannot guarantee the veracity of the analyses/results that you would receive if you decide to use this tool, use with caution.
+
+## Showcase
+
+Using [OrbitTool.jl](https://github.com/MichaszJ/satellite-analysis-toolkit/blob/main/src/OrbitTool.jl) for plotting ground-tracks and orbits of satellites:
+
+![](./images/ground-track.png)
