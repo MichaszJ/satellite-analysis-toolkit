@@ -30,12 +30,13 @@ Makie.rotate!(surf, Quaternionf(0.0, 0.0, 1, 0));
 
 colsize!(fig.layout, 1, Relative(1/3))
 
+# a, e, i, asc, arg, theta = orbital_elements
 elements = Observable([
-    26600,
-    0.74,
-    deg2rad(63.4),
-    deg2rad(90),
+    8350,
+    0.19760,
+    deg2rad(60),
     deg2rad(270),
+    deg2rad(45),
     deg2rad(230)
 ]);
 
@@ -43,8 +44,8 @@ ax3 = fig[2,1] = GridLayout()
 rowsize!(fig.layout, 2, Relative(1/5))
 
 # tb_num_steps = Textbox(ax3[1,2], stored_string="100", validator = Int, textcolor=:white)
-num_steps_obsv = Observable(100)
-num_steps_sl = Slider(ax3[1,2], range = 50:1000, startvalue = to_value(num_steps_obsv), horizontal = true)
+num_steps_obsv = Observable(250)
+num_steps_sl = Slider(ax3[1,2], range = 50:750, startvalue = to_value(num_steps_obsv), horizontal = true)
 connect!(num_steps_obsv, num_steps_sl.value)
 Label(ax3[1,1], @lift("Number of Computed Points: $($num_steps_obsv)"))
 
@@ -120,16 +121,49 @@ ax2 = GeoAxis(
 # image!(ax2, -180..180, -90..90, img; interpolate = true) # this must be included
 # surface!(ax2,  -180..180, -90..90, ones(size(img)...); color = img, shading = false)
 
-clamp_lon(lon) = lon > 180.0 || lon < -180.0 ? lon % 180 - sign(lon)*floor(abs(lon/180))*180 : lon
-clamp_lat(lat) = lat > 90.0 || lat < -90.0 ? lat % 90 - sign(lat)*floor(abs(lat/90))*90 : lat
+# clamp_lon(lon) = lon > 180.0 || lon < -180.0 ? lon % 180 - sign(lon)*floor(abs(lon/180))*180 : lon
+# clamp_lat(lat) = lat > 90.0 || lat < -90.0 ? lat % 90 - sign(lat)*floor(abs(lat/90))*90 : lat
+
+# make more elegant
+function clamp_lon(lon)
+	if lon > 180.0
+		while lon > 180.0
+			lon -= 360
+		end
+		return lon
+	elseif lon < -180.0
+		while lon < 180.0
+			lon += 360
+		end
+        return lon
+	else
+		return lon
+	end
+end
+
+function clamp_lat(lat)
+	if lat > 90.0
+		while lat > 90.0
+			lat -= 180
+		end
+		return lat
+	elseif lat < -90.0
+		while lat < 90.0
+			lat += 180
+		end
+        return lat
+	else
+		return lat
+	end
+end
 
 # initial plot
 lon, lat, alt, times = ground_track(to_value(elements), 0.0, to_value(final_time_obsv)*60^2, num_steps=to_value(num_steps_obsv), return_times=true);
 
-println("Lat: $(rad2deg(maximum(lat))) $(rad2deg(minimum(lat)))")
-println("Lat Clamp: $(clamp_lat(rad2deg(maximum(lat)))) $(clamp_lat(rad2deg(minimum(lat))))")
-println("Lon: $(rad2deg(maximum(lon))) $(rad2deg(minimum(lon)))")
-println("Lon Clamp: $(clamp_lon(rad2deg(maximum(lon)))) $(clamp_lon(rad2deg(minimum(lon))))")
+# println("Lat: $(rad2deg(maximum(lat))) $(rad2deg(minimum(lat)))")
+# println("Lat Clamp: $(clamp_lat(rad2deg(maximum(lat)))) $(clamp_lat(rad2deg(minimum(lat))))")
+# println("Lon: $(rad2deg(maximum(lon))) $(rad2deg(minimum(lon)))")
+# println("Lon Clamp: $(clamp_lon(rad2deg(maximum(lon)))) $(clamp_lon(rad2deg(minimum(lon))))")
 
 ground_track_coords = Observable(Matrix(hcat(clamp_lon.(rad2deg.(Float64.(lon))), clamp_lat.(rad2deg.(Float64.(lat))))'));
 
@@ -172,6 +206,49 @@ on(final_time_sl.value) do tf
     pos_coords[] = Matrix(hcat(pos_x, pos_y, pos_z)')
 end
 
+end
+
+elements_sg = SliderGrid(
+    ax3[1,4],
+    (label = "Semi-Major Axis", range = 7000:45000, format = "{:.2f} km", startvalue = 8350),
+    (label = "Eccentricity", range = 0:0.001:0.999, format = "{:.3f}", startvalue = 0.19760),
+    (label = "Inclination", range = 0:180, format = "{:.2}°", startvalue = 60),
+    (label = "RAAN", range = 0:360, format = "{:.2}°", startvalue = 270),
+    (label = "Argument of Periapsis", range = 0:360, format = "{:.2}°", startvalue = 45),
+    (label = "True Anomaly", range = 0:360, format = "{:.2}°", startvalue = 230),
+    width = 750,
+)
+
+colsize!(ax3, 1, Relative(1/3))
+colsize!(ax3, 2, Relative(1/3))
+
+sliderobservables = [s.value for s in elements_sg.sliders]
+bars = lift(sliderobservables...) do slvalues...
+    a, e, i, asc, arg, theta  = [slvalues...]
+    # a, e, i = [slvalues...]
+    old_els = to_value(elements)
+
+    old_els[1] = a
+    old_els[2] = e
+    old_els[3] = deg2rad(i)
+    old_els[4] = deg2rad(asc)
+    old_els[5] = deg2rad(arg)
+    old_els[6] = deg2rad(theta)
+
+    elements[] = old_els
+
+    lon, lat, alt, times = ground_track(to_value(elements), 0.0, to_value(final_time_obsv)*60^2, num_steps=to_value(num_steps_obsv), return_times=true)
+    ground_track_coords[] = Matrix(hcat(clamp_lon.(rad2deg.(Float64.(lon))), clamp_lat.(rad2deg.(Float64.(lat))))')
+
+    N = eq_rad ./ sqrt.(1 .- ecc_sq .* sin.(lat).^2)
+
+    pos_x = (N .+ alt) .* cos.(lat) .* cos.(lon) ./ eq_rad
+    pos_y = (N .+ alt) .* cos.(lat) .* sin.(lon) ./ eq_rad
+    pos_z = ((1 - ecc_sq) .* N .+ alt) .* sin.(lat) ./ eq_rad
+
+    pos_coords[] = Matrix(hcat(pos_x, pos_y, pos_z)')
+
+    [slvalues...]
 end
 
 
