@@ -8,6 +8,6 @@ Disclaimer: This is a personal project for personal use and education, I cannot 
 
 ## Showcase
 
-Using [OrbitTool.jl](https://github.com/MichaszJ/satellite-analysis-toolkit/blob/main/src/OrbitTool.jl) for plotting ground-tracks and orbits of satellites:
+Using [GroundTracker.jl](https://github.com/MichaszJ/satellite-analysis-toolkit/blob/main/src/GroundTracker.jl) for plotting ground-tracks and orbits of satellites:
 
 ![](./images/ground-track.png)
