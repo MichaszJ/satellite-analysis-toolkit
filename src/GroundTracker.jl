@@ -128,9 +128,8 @@ begin
 
     pos_coords = Observable(Matrix(hcat(pos_x, pos_y, pos_z)'));
 
-    scatter!(ax2, ground_track_coords, marker=:cross, color=:orange)
-    lines!(ax1, pos_coords, linestyle = :dash, color=:orange)
-
+    scatter!(ax2, ground_track_coords, marker=:cross, color=:seagreen2)
+    lines!(ax1, pos_coords, linestyle = :dash, color=:seagreen2)
 
     on(num_steps_sl.value) do ns
         lon, lat, alt, times = ground_track(to_value(elements), 0.0, to_value(final_time_obsv)*60^2, num_steps=ns, return_times=true)
