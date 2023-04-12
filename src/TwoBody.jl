@@ -1,12 +1,10 @@
+# module TwoBody
+
 using Plots, ModelingToolkit, DifferentialEquations, Unitful
+include("Utils.jl");
+include("OrbitalDynamics.jl");
 
-# helper functions for dealing with units in initial conditions and parameter dicts
-# see: https://docs.sciml.ai/ModelingToolkit/dev/basics/Validation/#Parameter-and-Initial-Condition-Values
-function remove_units(p::Dict)
-    Dict(k => Unitful.ustrip(ModelingToolkit.get_unit(k), v) for (k, v) in p)
-end
-
-add_units(p::Dict) = Dict(k => v * ModelingToolkit.get_unit(k) for (k, v) in p)
+# export two_body_equations, diffeq_two_body_system, TwoBodySystem, two_body_example_u₀, two_body_example_p, two_body_xample_tspan
 
 const G_val = 6.6743e-11u"N*m^2/kg^2"
 
@@ -58,7 +56,7 @@ diffeq_two_body_system = structural_simplify(ODESystem(
 ));
 
 # example values
-example_u₀ = Dict(
+two_body_example_u₀ = Dict(
 	x₁ => 0.0u"m",
 	y₁ => 0.0u"m",
 	z₁ => 0.0u"m",
@@ -73,12 +71,42 @@ example_u₀ = Dict(
 	ż₂ => 0.0u"m/s"
 )
 
-example_p = Dict(
+two_body_example_p = Dict(
 	G => G_val,
 	m₁ => 10e26u"kg",
 	m₂ => 10e26u"kg"
 )
 
-example_tspan = (0.0, 480.0)
+two_body_example_tspan = [0.0, 480.0]
 
-example_two_body_problem = ODEProblem(diffeq_two_body_system, remove_units(example_u₀), example_tspan, remove_units(example_p), jac=true)
+function TwoBodySystem(u₀::Dict{Num, Quantity{T}}, params::Dict{Num, Quantity{T}}, tspan::Vector{T}) where {T<:Number}
+    @assert valtype(u₀) == valtype(params) "Numeric values in u₀ and params must be the same type"
+
+    prob = ODEProblem(
+        diffeq_two_body_system, 
+        remove_units(u₀), 
+        tspan, 
+        remove_units(params), 
+        jac=true
+    )
+
+    return OrbitalSystem{T, Quantity{T}}("Two-Body System", two_body_equations, diffeq_two_body_system, prob, u₀, params, tspan)
+end
+
+function TwoBodySystem(u₀::Dict{Num, T}, params::Dict{Num, T}, tspan::Vector{T}) where {T<:Number}
+    @assert valtype(u₀) == valtype(params) "Numeric values in u₀ and params must be the same type"
+
+    println("Warning: It is recommended to use Unitful.jl units when working with SAT")
+
+    prob = ODEProblem(
+        diffeq_two_body_system, 
+        u₀, 
+        tspan, 
+        params, 
+        jac=true
+    )
+
+    return OrbitalSystem{T, T}("Two-Body System", two_body_equations, diffeq_two_body_system, prob, u₀, params, tspan)
+end
+
+# end
