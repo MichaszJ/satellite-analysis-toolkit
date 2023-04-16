@@ -1,16 +1,28 @@
-# module OrbitalDynamics
-
 using Plots, ModelingToolkit, DifferentialEquations, Unitful
 
-# export OrbitalSystem, Base.show, SolveOrbitalSystem
+mutable struct BodyState{T<:Number}
+    x::Union{T, Quantity{T}}
+    y::Union{T, Quantity{T}}
+    z::Union{T, Quantity{T}}
+    ẋ::Union{T, Quantity{T}}
+    ẏ::Union{T, Quantity{T}}
+    ż::Union{T, Quantity{T}}
+end
 
-mutable struct OrbitalSystem{T<:Number, Quant<:Number}
+mutable struct OrbitalBody{T<:Number}
+    name::String
+    mass::Union{T, Quantity{T}}
+    state::BodyState{T}
+end
+
+struct OrbitalSystem{T<:Number}
     type::String
+    orbital_bodies::Dict{String, OrbitalBody}
     eqns::Vector{Equation}
     system::ODESystem
 	problem::ODEProblem
-    u₀::Dict{Num, Quant}
-    params::Dict{Num, Quant}
+    u₀::Dict{Num, Union{T, Quantity{T}}}
+    params::Dict{Num, Union{T, Quantity{T}}}
     tspan::Vector{T}
 end
 
@@ -31,4 +43,7 @@ function SolveOrbitalSystem(system::OrbitalSystem, solver::Union{DEAlgorithm,Not
 	return solve(system.problem, solver; solver_args...)
 end
 
-# end
+function InterpolateOrbitalSolution(solution::ODESolution, vars::Vector{Num}, times::Union{StepRangeLen, Vector})
+    sol_interp = solution(times)
+    return [sol_interp[var] for var in vars]
+end
