@@ -6,6 +6,8 @@ GLMakie.activate!()
 
 Makie.set_theme!(theme_dark())
 
+using Colors, ColorSchemes
+
 # a, e, i, asc, arg, theta = orbital_elements
 # mutable struct Elements{T<:Number}
 #     a::Union{T, Quantity{T}}
@@ -54,6 +56,20 @@ function check_gs_visibility(station::GroundStation, sat_position::Vector{Float6
     return elevation >= station.min_elevation
 end
 
+
+
+colormaps = Dict(
+    # "Sat 1" => range(colorant"red", stop=colorant"green", length=2),
+    # "Sat 2" => range(colorant"blue", stop=colorant"yellow", length=2)
+    # "Sat 1" => colormap("Blues"),
+    # "Sat 2" => colormap("Greens"),
+    # "Sat 1" => colormap("Greens"),
+    # "Sat 2" => cgrad(ColorScheme([RGB{Float64}(i, 1.5i, 2i) for i in [0.25, 0.35, 0.5]]), 3, categorical=true)
+
+    "Sat 1" => cgrad(ColorScheme([colorant"#7E1717", colorant"#068DA9", colorant"#E55807"]), 3, categorical=true),
+    "Sat 2" => cgrad(ColorScheme([colorant"#146C94", colorant"#AFD3E2", colorant"#19A7CE"]), 3, categorical=true)
+)
+
 begin
     # source: https://beautiful.makie.org/dev/examples/generated/2d/geo/blue_marble/
     earth_img = load(download("https://upload.wikimedia.org/wikipedia/commons/5/56/Blue_Marble_Next_Generation_%2B_topography_%2B_bathymetry.jpg"));
@@ -64,7 +80,7 @@ begin
     y = [sin(φ) * sin(θ) for θ in θ, φ in φ] .* 6378.137;
     z = [cos(θ) for θ in θ, φ in φ] .* 6378.137;
 
-    fig = Figure(resolution=(2000,1000)); display(fig);
+    fig = Figure(resolution=(2000,1500)); display(fig);
     ax1 = Axis3(fig[1,1], aspect=:data, viewmode=:fitzoom, title="Satellite ECI Frame Orbit")
     surf = surface!(
         ax1, x, y, z;
@@ -96,8 +112,8 @@ begin
     ]
 
     proj_obsv = Observable("")
-    Label(ax3[1,3], "Map Projection")
-    proj_menu = Menu(ax3[2,3], options=projections)
+    Label(ax3[3,1], "Map Projection")
+    proj_menu = Menu(ax3[3,2], options=projections)
     connect!(proj_obsv, proj_menu.selection)
 
     on(proj_menu.selection) do s
@@ -109,12 +125,14 @@ begin
     end
 
     ax2 = GeoAxis(
-        fig[1, 2]; 
+        fig[1, 2:3]; 
         title="Satellite Groundtrack",
         coastlines = true,
         coastline_attributes = (; color = "white"),
         dest=proj,
     );
+
+
 
     # clamp_lon(lon) = lon > 180.0 || lon < -180.0 ? lon % 180 - sign(lon)*floor(abs(lon/180))*180 : lon
     # clamp_lat(lat) = lat > 90.0 || lat < -90.0 ? lat % 90 - sign(lat)*floor(abs(lat/90))*90 : lat
@@ -159,6 +177,9 @@ begin
     # pos_coords_dict = Dict()
 
     # for (key, sat) in sats
+
+    orbit_lines, geo_points = Dict(), Dict()
+
     for (key, sat) in sats
         lon, lat, alt, times = ground_track(to_value(sat.elements), 0.0, to_value(final_time_obsv)*60^2, num_steps=to_value(num_steps_obsv), return_times=true);
 
@@ -177,8 +198,11 @@ begin
 
         sat_visibilities[key] = visibility
     
-        scatter!(ax2, sat.ground_track_coords, marker=:cross, label=key, color=visibility)
-        lines!(ax1, sat.pos_coords, linestyle=:dash, label=key, color=visibility)
+        # push!(geo_points, scatter!(ax2, sat.ground_track_coords, marker=:cross, label=key, color=visibility))
+        # push!(orbit_lines, lines!(ax1, sat.pos_coords, linestyle=:dash, label=key, color=visibility))
+
+        orbit_lines[key] = lines!(ax1, sat.pos_coords, linestyle=:dash, color=visibility, colormap=colormaps[key])
+        geo_points[key] = scatter!(ax2, sat.ground_track_coords, marker=:cross, color=visibility, colormap=colormaps[key])
     end
 
     # ground station plotting
@@ -188,8 +212,19 @@ begin
         # meshscatter!(ax1, station.position..., markersize=1000, label=key)
     end
 
-    axislegend(ax1)
+    # axislegend(ax1)
     axislegend(ax2)
+
+    colorbar_ax = fig[2,3] = GridLayout()    
+    # colsize!(fig.layout, 3, Relative(0.175))
+
+    for (i, (key, sat)) in enumerate(sats)
+        if i == 1
+            Colorbar(colorbar_ax[i,1], orbit_lines[key], label=key, vertical = false, ticks=([0.17, 0.5, 0.82], ["Not Visible", "Default", "Visble"]))
+        else
+            Colorbar(colorbar_ax[i,1], orbit_lines[key], label=key, vertical = false, ticklabelsvisible=false)
+        end
+    end
 
     on(num_steps_sl.value) do ns
         # for (key, sat) in sats
@@ -231,40 +266,66 @@ begin
         autolimits!(ax1)
     end
 
-    ax4 = fig[2,2] = GridLayout()
+    rowsize!(fig.layout, 1, Relative(0.6))
 
     sats_list = [key for (key, sat) in sats]
-
-    elements_sg = SliderGrid(
-        ax4[2,1],
-        (label = "Semi-Major Axis", range = 7000:45000, format = "{:.2f} km", startvalue = to_value(sats[sats_list[1]].elements)[1]),
-        (label = "Eccentricity", range = 0:0.001:0.999, format = "{:.3f}", startvalue = to_value(sats[sats_list[1]].elements)[2]),
-        (label = "Inclination", range = 0:180, format = "{:.2}°", startvalue = rad2deg(to_value(sats[sats_list[1]].elements)[3])),
-        (label = "RAAN", range = 0:360, format = "{:.2}°", startvalue = rad2deg(to_value(sats[sats_list[1]].elements)[4])),
-        (label = "Argument of Periapsis", range = 0:360, format = "{:.2}°", startvalue = rad2deg(to_value(sats[sats_list[1]].elements)[5])),
-        (label = "True Anomaly", range = 0:360, format = "{:.2}°", startvalue = rad2deg(to_value(sats[sats_list[1]].elements)[6])),
-    )
-
-    sliderobservables = [s.value for s in elements_sg.sliders]
-    
     selected_sat_obsv = Observable(sats_list[1])
-    sat_menu = Menu(ax4[1, 1], options=sats_list)
+
+    Label(ax3[4,1], "Select Satellite")
+    sat_menu = Menu(ax3[4, 2], options=sats_list,)
 
     on(sat_menu.selection) do s
         selected_sat_obsv[] = s
 
-        elements_sg.sliders[1].value[] = to_value(sats[s].elements)[1]
-        elements_sg.sliders[2].value[] = to_value(sats[s].elements)[2]
-        elements_sg.sliders[3].value[] = rad2deg(to_value(sats[s].elements)[3])
-        elements_sg.sliders[4].value[] = rad2deg(to_value(sats[s].elements)[4])
-        elements_sg.sliders[5].value[] = rad2deg(to_value(sats[s].elements)[5])
-        elements_sg.sliders[6].value[] = rad2deg(to_value(sats[s].elements)[6])
+        active_sat_elements = to_value(sats[s].elements)
 
-        sliderobservables = [slider.value for slider in elements_sg.sliders]
+        a_textbox.stored_string[] = active_sat_elements[1] |> string
+        e_textbox.stored_string[] = active_sat_elements[2] |> string
+        i_textbox.stored_string[] = rad2deg(active_sat_elements[3]) |> string
+        Ω_textbox.stored_string[] = rad2deg(active_sat_elements[4]) |> string
+        ω_textbox.stored_string[] = rad2deg(active_sat_elements[5]) |> string
+        θ_textbox.stored_string[] = rad2deg(active_sat_elements[6]) |> string
+
+        a_textbox.displayed_string[] = active_sat_elements[1] |> string
+        e_textbox.displayed_string[] = active_sat_elements[2] |> string
+        i_textbox.displayed_string[] = rad2deg(active_sat_elements[3]) |> string
+        Ω_textbox.displayed_string[] = rad2deg(active_sat_elements[4]) |> string
+        ω_textbox.displayed_string[] = rad2deg(active_sat_elements[5]) |> string
+        θ_textbox.displayed_string[] = rad2deg(active_sat_elements[6]) |> string
     end
 
-    bars = lift(sliderobservables...) do slvalues...
-        a, e, i, asc, arg, theta  = [slvalues...]
+    ax4 = fig[2,2] = GridLayout()    
+    
+    row1 = ax4[1,1] = GridLayout()
+    Label(row1[1, 1], "Semi-Major Axis", tellwidth=false, halign=:left)
+    a_validator(str) = tryparse(Float64, str) ≠ nothing && (7000 ≤ parse(Float64, str) ≤ 45000) ? true : false
+    a_textbox = Textbox(row1[1, 2], validator=a_validator, halign=:left, tellwidth=false, width=250, stored_string=to_value(sats[sats_list[1]].elements)[1] |> string)
+
+    row2 = ax4[2,1] = GridLayout()
+    Label(row2[1, 1], "Eccentricity", tellwidth=false, halign=:left)
+    e_validator(str) = tryparse(Float64, str) ≠ nothing && (0 ≤ parse(Float64, str) < 1) ? true : false
+    e_textbox = Textbox(row2[1, 2], validator=e_validator, halign=:left, tellwidth=false, width=250, stored_string=to_value(sats[sats_list[1]].elements)[2] |> string)
+
+    row3 = ax4[3,1] = GridLayout()
+    Label(row3[1, 1], "Inclination", tellwidth=false, halign=:left)
+    i_validator(str) = tryparse(Float64, str) ≠ nothing && (0 ≤ parse(Float64, str) ≤ 180) ? true : false
+    i_textbox = Textbox(row3[1, 2], validator=i_validator, halign=:left, tellwidth=false, width=250, stored_string=to_value(sats[sats_list[1]].elements)[3] |> rad2deg |> string)
+
+    row4 = ax4[4,1] = GridLayout()
+    Label(row4[1, 1], "RAAN", tellwidth=false, halign=:left)
+    degree_validator(str) = tryparse(Float64, str) ≠ nothing && (0 ≤ parse(Float64, str) ≤ 360) ? true : false
+    Ω_textbox = Textbox(row4[1, 2], validator=degree_validator, halign=:left, tellwidth=false, width=250, stored_string=to_value(sats[sats_list[1]].elements)[4] |> rad2deg |> string)
+
+    row5 = ax4[5,1] = GridLayout()
+    Label(row5[1, 1], "Argument of Periapsis", tellwidth=false, halign=:left)
+    ω_textbox = Textbox(row5[1, 2], validator=degree_validator, halign=:left, tellwidth=false, width=250, stored_string=to_value(sats[sats_list[1]].elements)[5] |> rad2deg |> string)
+
+    row6 = ax4[6,1] = GridLayout()
+    Label(row6[1, 1], "True Anomaly", tellwidth=false, halign=:left)
+    θ_textbox = Textbox(row6[1, 2], validator=degree_validator, halign=:left, tellwidth=false, width=250, stored_string=to_value(sats[sats_list[1]].elements)[6] |> rad2deg |> string)
+
+    textboxes = lift(a_textbox.stored_string, e_textbox.stored_string, i_textbox.stored_string, Ω_textbox.stored_string, ω_textbox.stored_string, θ_textbox.stored_string) do slvalues...
+        a, e, i, asc, arg, theta  = parse.(Float64, [slvalues...])
 
         active_sat = sats[to_value(selected_sat_obsv)]
 
@@ -286,5 +347,28 @@ begin
         autolimits!(ax1)
 
         [slvalues...]
+    end
+
+    Label(ax3[5,1], "Show GS Visibility")
+    visibility_toggle = Toggle(ax3[5,2], active = true, tellwidth=false)
+
+    on(visibility_toggle.active) do state
+        if state == true
+            for (key, lines) in orbit_lines
+                lines.color = to_value(sat_visibilities[key])
+            end
+
+            for (key, points) in geo_points
+                points.color = to_value(sat_visibilities[key])
+            end
+        else
+            for (key, lines) in orbit_lines
+                lines.color = [0.5 for _ in 1:length(to_value(sat_visibilities[key]))]
+            end
+
+            for (key, points) in geo_points
+                points.color = [0.5 for _ in 1:length(to_value(sat_visibilities[key]))]
+            end
+        end
     end
 end
