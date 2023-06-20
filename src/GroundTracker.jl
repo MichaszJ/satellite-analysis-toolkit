@@ -5,18 +5,11 @@ using Downloads: download
 GLMakie.activate!()
 
 Makie.set_theme!(theme_dark())
+update_theme!(fonts = (; regular = "iA Writer Quattro V", bold = "iA Writer Quattro V"))
 
 using Colors, ColorSchemes
 
-# a, e, i, asc, arg, theta = orbital_elements
-# mutable struct Elements{T<:Number}
-#     a::Union{T, Quantity{T}}
-#     e::T
-#     i::Union{T, Quantity{T}}
-#     Ω::Union{T, Quantity{T}}
-#     ω::Union{T, Quantity{T}}
-#     θ::Union{T, Quantity{T}}
-# end
+using ModelingToolkit, DifferentialEquations
 
 mutable struct GroundTrackerSatellite
     name::String
@@ -31,8 +24,8 @@ end
 
 # a, e, i, asc, arg, theta = orbital_elements
 sats = Dict(
-    "Sat 1" => GroundTrackerSatellite("Sat 1", Observable([10000, 0.19760, deg2rad(60), deg2rad(270), deg2rad(45), deg2rad(230)])),
-    "Sat 2" => GroundTrackerSatellite("Sat 2", Observable([8350, 0.05, deg2rad(60), deg2rad(270), deg2rad(45), deg2rad(50)])),
+    "Sat 1" => GroundTrackerSatellite("Sat 1", Observable([8350, 0.19760, deg2rad(60), deg2rad(270), deg2rad(45), deg2rad(230)])),
+    "Sat 2" => GroundTrackerSatellite("Sat 2", Observable([15000, 0.05, deg2rad(60), deg2rad(270), deg2rad(45), deg2rad(50)])),
 )
 
 sat_visibilities = Dict()
@@ -56,8 +49,6 @@ function check_gs_visibility(station::GroundStation, sat_position::Vector{Float6
     return elevation >= station.min_elevation
 end
 
-
-
 colormaps = Dict(
     # "Sat 1" => range(colorant"red", stop=colorant"green", length=2),
     # "Sat 2" => range(colorant"blue", stop=colorant"yellow", length=2)
@@ -70,20 +61,136 @@ colormaps = Dict(
     "Sat 2" => cgrad(ColorScheme([colorant"#146C94", colorant"#AFD3E2", colorant"#19A7CE"]), 3, categorical=true)
 )
 
+ωe = 0.261799387799149/(60*60)
+
+J2 = 1.083e-3
+Re = 6378.137
+μ = 398600
+f = 1/298.257223563
+
+@variables t x(t) y(t) z(t) ẋ(t) ẏ(t) ż(t) r(t) E(t) F(t) G(t)
+D = Differential(t)
+
+eqs = [
+    r ~ sqrt(x^2 + y^2 + z^2),
+    
+    D(x) ~ ẋ,
+    D(y) ~ ẏ,
+    D(z) ~ ż,
+
+    D(ẋ) ~ -x*μ*(2*r^2 + 3*J2*Re^2*(5*z^2/r^2 - 1)) / (2*r^5),
+    D(ẏ) ~ -y*μ*(2*r^2 + 3*J2*Re^2*(5*z^2/r^2 - 1)) / (2*r^5),
+    D(ż) ~ -z*μ*(2*r^4 + 9*J2*r^2 * Re^2 - 15*J2*Re^2 * z^2) / (2*r^7),
+
+    E ~ x*cos(ωe*t) - y*sin(ωe*t),
+    F ~ y*cos(ωe*t) + x*sin(ωe*t),
+    G ~ z
+]
+    
+J2_system = structural_simplify(ODESystem(
+    eqs,
+    t,
+    name=:J2_system
+))
+
+function elements_to_state(a, e, i, Ω, ω, θ; μ=398600)
+    h = sqrt(-a*μ*(e^2 - 1))
+
+    r_w = h^2 / μ / (1 + e * cos(θ)) .* [cos(θ) sin(θ) 0];
+    v_w = μ / h .* [-sin(θ) e + cos(θ) 0];
+
+    R1 = [cos(-ω) -sin(-ω) 0; sin(-ω) cos(-ω) 0; 0 0 1];
+    R2 = [1 0 0; 0 cos(-i) -sin(-i); 0 sin(-i) cos(-i)];
+    R3 = [cos(-Ω) -sin(-Ω) 0; sin(-Ω) cos(-Ω) 0; 0 0 1];
+    r_rot = r_w * R1 * R2 * R3;
+    v_rot = v_w * R1 * R2 * R3;
+    
+    return vec(r_rot), vec(v_rot)
+end
+
+const a = 6378.137
+const e = sqrt(2*fe - fe^2)
+
+function LLA_from_EFG_approx(E, F, G)
+    ϕ = atan(G, sqrt(E^2 + F^2)*(1 - f)^2)
+    λ = atan(F, E)
+    h = sqrt(E^2 + F^2 + G^2) - a*sqrt((1 - e^2)/(1 - e^2 * cos(atan(G, sqrt(E^2 + F^2)))^2))
+
+    return [ϕ, λ, h]
+end
+
+function normal_distance(ϕ)
+    a / sqrt(1 - (e * sin(ϕ))^2)
+end
+
+function EFG_from_LLA(ϕ, λ, h)
+    E = (normal_distance(ϕ) + h) * cos(λ) * cos(ϕ)
+    F = (normal_distance(ϕ) + h) * sin(λ) * cos(ϕ)
+    G = (normal_distance(ϕ) * (1 - e^2) + h)*sin(ϕ)
+
+    return [E, F, G]
+end
+
+function LLA_from_EFG(E, F, G; tol=0.01)
+    pos = [E, F, G]
+    fakePos = copy(pos)
+    result = LLA_from_EFG_approx(fakePos...)
+    error = EFG_from_LLA(result...) .- pos
+
+    while norm(error) > tol
+        fakePos .-= error
+        result = LLA_from_EFG_approx(fakePos...)
+        error = EFG_from_LLA(result...) .- pos
+    end
+
+    return reverse(result[1:2])
+end
+
+function GroundTrack2(elements, tspan, num_steps)
+    states = elements_to_state(elements...)
+
+    u0 = Dict(
+        x => states[1][1], 
+        y => states[1][2], 
+        z => states[1][3], 
+        ẋ => states[2][1], 
+        ẏ => states[2][2], 
+        ż => states[2][3]
+    )
+
+    prob = ODEProblem(
+        J2_system, 
+        u0, 
+        tspan, 
+        [],
+        jac=true
+    )
+
+    sol = solve(prob)
+
+    times = LinRange(0, tspan[end], num_steps)
+    interp = sol(times)
+
+    ground_track_coords = rad2deg.(reduce(hcat,  LLA_from_EFG.(interp[E], interp[F], interp[G])))
+    orbit_coords = Matrix(hcat(interp[E], interp[F], interp[G])')
+
+    return ground_track_coords, orbit_coords
+end
+
 begin
     # source: https://beautiful.makie.org/dev/examples/generated/2d/geo/blue_marble/
     earth_img = load(download("https://upload.wikimedia.org/wikipedia/commons/5/56/Blue_Marble_Next_Generation_%2B_topography_%2B_bathymetry.jpg"));
     n = 1024 ÷ 4 # 2048
-    θ = LinRange(0, π, n);
-    φ = LinRange(0, 2π, 2 * n);
-    x = [cos(φ) * sin(θ) for θ in θ, φ in φ] .* 6378.137;
-    y = [sin(φ) * sin(θ) for θ in θ, φ in φ] .* 6378.137;
-    z = [cos(θ) for θ in θ, φ in φ] .* 6378.137;
+    θe = LinRange(0, π, n);
+    φe = LinRange(0, 2π, 2 * n);
+    xe = [cos(φe) * sin(θe) for θe in θe, φe in φe] .* 6378.137;
+    ye = [sin(φe) * sin(θe) for θe in θe, φe in φe] .* 6378.137;
+    ze = [cos(θe) for θe in θe, φe in φe] .* 6378.137;
 
-    fig = Figure(resolution=(2000,1500)); display(fig);
-    ax1 = Axis3(fig[1,1], aspect=:data, viewmode=:fitzoom, title="Satellite ECI Frame Orbit")
+    fig = Figure(resolution=(2000,1500), fonts = (; regular = "iA Writer Quattro V")); display(fig);
+    ax1 = Axis3(fig[1,1], aspect=:data, viewmode=:fitzoom, title="Satellite ECEF Frame Orbit")
     surf = surface!(
-        ax1, x, y, z;
+        ax1, xe, ye, ze;
         color = earth_img,
         shading = false,
         lightposition = Vec3f(-2, -3, -3),
@@ -132,91 +239,30 @@ begin
         dest=proj,
     );
 
-
-
-    # clamp_lon(lon) = lon > 180.0 || lon < -180.0 ? lon % 180 - sign(lon)*floor(abs(lon/180))*180 : lon
-    # clamp_lat(lat) = lat > 90.0 || lat < -90.0 ? lat % 90 - sign(lat)*floor(abs(lat/90))*90 : lat
-
-    # make more elegant
-    function clamp_lon(lon)
-        if lon > 180.0
-            while lon > 180.0
-                lon -= 360
-            end
-            return lon
-        elseif lon < -180.0
-            while lon < 180.0
-                lon += 360
-            end
-            return lon
-        else
-            return lon
-        end
-    end
-
-    function clamp_lat(lat)
-        if lat > 90.0
-            while lat > 90.0
-                lat -= 180
-            end
-            return lat
-        elseif lat < -90.0
-            while lat < 90.0
-                lat += 180
-            end
-            return lat
-        else
-            return lat
-        end
-    end
-
-    const eq_rad = 6378.137 
-    const ecc_sq = 6.69437999014e-3
-
-    # gt_coords_dict = Dict()
-    # pos_coords_dict = Dict()
-
-    # for (key, sat) in sats
-
     orbit_lines, geo_points = Dict(), Dict()
 
     for (key, sat) in sats
-        lon, lat, alt, times = ground_track(to_value(sat.elements), 0.0, to_value(final_time_obsv)*60^2, num_steps=to_value(num_steps_obsv), return_times=true);
+        ground_track_coords, orbit_coords =  GroundTrack2(to_value(sat.elements), [0.0, to_value(final_time_obsv)*60^2], to_value(num_steps_obsv))
+        sat.ground_track_coords = Observable(ground_track_coords);
+    
+        sat.pos_coords = Observable(orbit_coords);
 
-        sat.ground_track_coords = Observable(Matrix(hcat(clamp_lon.(rad2deg.(Float64.(lon))), clamp_lat.(rad2deg.(Float64.(lat))))'));
-    
-        N = eq_rad ./ sqrt.(1 .- ecc_sq .* sin.(lat).^2);
-    
-        pos_x = (N .+ alt) .* cos.(lat) .* cos.(lon);
-        pos_y = (N .+ alt) .* cos.(lat) .* sin.(lon);
-        pos_z = ((1 - ecc_sq) .* N .+ alt) .* sin.(lat);
-    
-        sat.pos_coords = Observable(Matrix(hcat(pos_x, pos_y, pos_z)'));
-
-        pos = [[pos_x[i], pos_y[i], pos_z[i]] for i in eachindex(pos_x)]
-        visibility = Observable([check_gs_visibility(ground_stations["GS 1"], p) for p in pos])
+        visibility = Observable([check_gs_visibility(ground_stations["GS 1"], p) for p in [[orbit_coords[1,i], orbit_coords[2,i], orbit_coords[3,i]] for i in 1:size(orbit_coords, 2)]])
 
         sat_visibilities[key] = visibility
-    
-        # push!(geo_points, scatter!(ax2, sat.ground_track_coords, marker=:cross, label=key, color=visibility))
-        # push!(orbit_lines, lines!(ax1, sat.pos_coords, linestyle=:dash, label=key, color=visibility))
 
         orbit_lines[key] = lines!(ax1, sat.pos_coords, linestyle=:dash, color=visibility, colormap=colormaps[key])
         geo_points[key] = scatter!(ax2, sat.ground_track_coords, marker=:cross, color=visibility, colormap=colormaps[key])
     end
 
-    # ground station plotting
     for (key, station) in ground_stations
         longitude, latitude = position_to_asc_dec(station.position)
         scatter!(ax2, rad2deg.([longitude latitude]), marker='⧇', markersize=40, label=key)
-        # meshscatter!(ax1, station.position..., markersize=1000, label=key)
     end
 
-    # axislegend(ax1)
     axislegend(ax2)
 
     colorbar_ax = fig[2,3] = GridLayout()    
-    # colsize!(fig.layout, 3, Relative(0.175))
 
     for (i, (key, sat)) in enumerate(sats)
         if i == 1
@@ -227,41 +273,25 @@ begin
     end
 
     on(num_steps_sl.value) do ns
-        # for (key, sat) in sats
         for (key, sat) in sats
-            lon, lat, alt, times = ground_track(to_value(sat.elements), 0.0, to_value(final_time_obsv)*60^2, num_steps=ns, return_times=true)
-            sat.ground_track_coords[] = Matrix(hcat(clamp_lon.(rad2deg.(Float64.(lon))), clamp_lat.(rad2deg.(Float64.(lat))))')
+            ground_track_coords, orbit_coords =  GroundTrack2(to_value(sat.elements), [0.0, to_value(final_time_obsv)*60^2], to_value(num_steps_obsv))
+            sat.ground_track_coords[] = ground_track_coords;
+        
+            sat.pos_coords[] = orbit_coords
 
-            N = eq_rad ./ sqrt.(1 .- ecc_sq .* sin.(lat).^2)
-
-            pos_x = (N .+ alt) .* cos.(lat) .* cos.(lon)
-            pos_y = (N .+ alt) .* cos.(lat) .* sin.(lon)
-            pos_z = ((1 - ecc_sq) .* N .+ alt) .* sin.(lat)
-
-            pos = [[pos_x[i], pos_y[i], pos_z[i]] for i in eachindex(pos_x)]
-            sat_visibilities[key][] = [check_gs_visibility(ground_stations["GS 1"], p) for p in pos]
-
-            sat.pos_coords[] = Matrix(hcat(pos_x, pos_y, pos_z)')
+            sat_visibilities[key][] = [check_gs_visibility(ground_stations["GS 1"], p) for p in [[orbit_coords[1,i], orbit_coords[2,i], orbit_coords[3,i]] for i in 1:size(orbit_coords,2)]]
         end
         autolimits!(ax1)
     end
 
     on(final_time_sl.value) do tf
-        # for (key, sat) in sats
         for (key, sat) in sats
-            lon, lat, alt, times = ground_track(to_value(sat.elements), 0.0, tf*60^2, num_steps=to_value(num_steps_obsv), return_times=true)
-            sat.ground_track_coords[] = Matrix(hcat(clamp_lon.(rad2deg.(Float64.(lon))), clamp_lat.(rad2deg.(Float64.(lat))))')
+            ground_track_coords, orbit_coords =  GroundTrack2(to_value(sat.elements), [0.0, to_value(final_time_obsv)*60^2], to_value(num_steps_obsv))
+            sat.ground_track_coords[] = ground_track_coords;
+        
+            sat.pos_coords[] = orbit_coords
 
-            N = eq_rad ./ sqrt.(1 .- ecc_sq .* sin.(lat).^2)
-
-            pos_x = (N .+ alt) .* cos.(lat) .* cos.(lon)
-            pos_y = (N .+ alt) .* cos.(lat) .* sin.(lon)
-            pos_z = ((1 - ecc_sq) .* N .+ alt) .* sin.(lat)
-
-            pos = [[pos_x[i], pos_y[i], pos_z[i]] for i in eachindex(pos_x)]
-            sat_visibilities[key][] = [check_gs_visibility(ground_stations["GS 1"], p) for p in pos]
-
-            sat.pos_coords[] = Matrix(hcat(pos_x, pos_y, pos_z)')
+            sat_visibilities[key][] = [check_gs_visibility(ground_stations["GS 1"], p) for p in [[orbit_coords[1,i], orbit_coords[2,i], orbit_coords[3,i]] for i in 1:size(orbit_coords,2)]]
         end
         autolimits!(ax1)
     end
@@ -331,19 +361,12 @@ begin
 
         active_sat.elements[] = [a, e, deg2rad(i), deg2rad(asc), deg2rad(arg), deg2rad(theta)]
 
-        lon, lat, alt, times = ground_track(to_value(active_sat.elements), 0.0, to_value(final_time_obsv)*60^2, num_steps=to_value(num_steps_obsv), return_times=true)
-        active_sat.ground_track_coords[] = Matrix(hcat(clamp_lon.(rad2deg.(Float64.(lon))), clamp_lat.(rad2deg.(Float64.(lat))))')
+        ground_track_coords, orbit_coords =  GroundTrack2(to_value(active_sat.elements), [0.0, to_value(final_time_obsv)*60^2], to_value(num_steps_obsv))
+        active_sat.ground_track_coords[] = ground_track_coords;
+    
+        active_sat.pos_coords[] = orbit_coords
 
-        N = eq_rad ./ sqrt.(1 .- ecc_sq .* sin.(lat).^2)
-
-        pos_x = (N .+ alt) .* cos.(lat) .* cos.(lon)
-        pos_y = (N .+ alt) .* cos.(lat) .* sin.(lon)
-        pos_z = ((1 - ecc_sq) .* N .+ alt) .* sin.(lat)
-
-        pos = [[pos_x[i], pos_y[i], pos_z[i]] for i in eachindex(pos_x)]
-        sat_visibilities[active_sat.name][] = [check_gs_visibility(ground_stations["GS 1"], p) for p in pos]
-
-        active_sat.pos_coords[] = Matrix(hcat(pos_x, pos_y, pos_z)')
+        sat_visibilities[active_sat.name][] = [check_gs_visibility(ground_stations["GS 1"], p) for p in [[orbit_coords[1,i], orbit_coords[2,i], orbit_coords[3,i]] for i in 1:size(orbit_coords,2)]]
         autolimits!(ax1)
 
         [slvalues...]
